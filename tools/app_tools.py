@@ -122,17 +122,11 @@ def _gateway_post(
         "Authorization": f"Bearer {gateway.nous_user_token}",
         "Content-Type": "application/json",
     }
-    # When the origin was rewritten (*.localhost → 127.0.0.1), send the
-    # original hostname so reverse-proxy routing works.
-    host_header = gateway.gateway_host_header
-    if host_header:
-        headers["Host"] = host_header
+    if gateway.gateway_host_header:
+        headers["Host"] = gateway.gateway_host_header
 
     try:
-        # Disable TLS verification when talking to a rewritten localhost origin
-        # (self-signed dev certs).
-        verify = host_header is None
-        with httpx.Client(timeout=timeout, verify=verify) as client:
+        with httpx.Client(timeout=timeout) as client:
             response = client.post(url, json=payload, headers=headers)
 
         # Return parsed body regardless of status code — the LLM handles errors
