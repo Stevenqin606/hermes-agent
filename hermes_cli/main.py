@@ -1854,7 +1854,11 @@ def _make_opentui_argv(tui_dev: bool) -> tuple[list[str], Path]:
                 print(preview, file=sys.stderr)
             sys.exit(1)
 
-    return [node, "--experimental-ffi", "--no-warnings", str(built)], app_dir
+    # --expose-gc (parity with Ink, main.py ~1909): makes `global.gc()` a real
+    # callable so the OpenTUI engine's GC hooks (W2 proactive idle GC; /heapdump)
+    # work instead of being silent no-ops. MUST be an argv flag — Node rejects
+    # --expose-gc in NODE_OPTIONS (see the heap-cap injection below).
+    return [node, "--experimental-ffi", "--no-warnings", "--expose-gc", str(built)], app_dir
 
 
 def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
@@ -2104,6 +2108,57 @@ def _read_cgroup_memory_limit() -> Optional[int]:
     return None
 
 
+def _config_tui_heap_mb_early() -> int | None:
+    """Read ``display.tui_heap_mb`` from config via a minimal YAML read.
+
+    Returns the configured V8 heap cap in MB, or ``None`` when unset/unreadable.
+    Mirrors :func:`_config_tui_engine_early`. A non-secret behavioral setting, so
+    it lives in ``config.yaml`` (NOT a ``HERMES_*`` env / the NODE_OPTIONS bridge,
+    which is denylisted) — the ``HERMES_TUI_HEAP_MB`` env is only the per-launch
+    override on top of this.
+    """
+    try:
+        home = os.environ.get("HERMES_HOME")
+        cfg_path = (
+            os.path.join(home, "config.yaml")
+            if home
+            else os.path.join(os.path.expanduser("~"), ".hermes", "config.yaml")
+        )
+        if os.path.exists(cfg_path):
+            import yaml as _yaml_heap
+
+            with open(cfg_path, encoding="utf-8") as _f:
+                raw = _yaml_heap.safe_load(_f) or {}
+            disp = raw.get("display", {})
+            if isinstance(disp, dict):
+                val = disp.get("tui_heap_mb")
+                if isinstance(val, bool):  # guard: YAML true/false is an int subclass
+                    return None
+                if isinstance(val, int) and val > 0:
+                    return val
+                if isinstance(val, str) and val.strip().isdigit():
+                    n = int(val.strip())
+                    if n > 0:
+                        return n
+    except Exception:
+        pass
+    return None
+
+
+def _resolve_tui_heap_override() -> int | None:
+    """The user's explicit V8 heap cap (MB), or ``None`` for the default path.
+
+    Precedence: ``HERMES_TUI_HEAP_MB`` env > ``display.tui_heap_mb`` config
+    (matches the ``HERMES_TUI_ENGINE`` env-first pattern). Honored by BOTH engines
+    via the shared ``NODE_OPTIONS`` injection. A positive integer wins; anything
+    else (unset/garbage/non-positive) falls through to the cgroup-aware default.
+    """
+    env_val = os.environ.get("HERMES_TUI_HEAP_MB", "").strip()
+    if env_val.isdigit() and int(env_val) > 0:
+        return int(env_val)
+    return _config_tui_heap_mb_early()
+
+
 def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     """Pick a V8 ``--max-old-space-size`` (MB) that fits the container.
 
@@ -2112,7 +2167,16 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
     cgroup limit so the heap + non-heap RSS stays under the cgroup ceiling,
     clamped to a sane floor (1536MB — below this V8 GC-thrashes and the TUI
     is barely usable).  Never exceeds ``default_mb``.
+
+    An explicit ``HERMES_TUI_HEAP_MB`` env / ``display.tui_heap_mb`` config
+    override REPLACES the 8192 default (D3): setting it low is the low-mem opt-in,
+    setting it high raises the ceiling. The cgroup-fit clamp still applies on top
+    so an override never exceeds what the container can hold — a low override is
+    honored as-is, a too-high one is still trimmed to ~75% of the cgroup limit.
     """
+    override = _resolve_tui_heap_override()
+    if override is not None:
+        default_mb = override
     limit = _read_cgroup_memory_limit()
     if not limit:
         return default_mb

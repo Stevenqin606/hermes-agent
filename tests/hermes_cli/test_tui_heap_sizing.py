@@ -99,6 +99,70 @@ class TestResolveTuiHeapMb:
         assert self._resolve(64 * GB) == 8192
 
 
+class TestHeapOverride:
+    """HERMES_TUI_HEAP_MB env / display.tui_heap_mb config override (W1/D3).
+
+    The override REPLACES the 8192 default; the cgroup-fit clamp still applies on
+    top so a too-high override can't exceed the container. Precedence: env > config.
+    """
+
+    def _resolve(self, limit_bytes, env=None, config_mb=None):
+        with mock.patch.object(m, "_read_cgroup_memory_limit", return_value=limit_bytes), \
+             mock.patch.object(m, "_config_tui_heap_mb_early", return_value=config_mb), \
+             mock.patch.dict(m.os.environ, env or {}, clear=False):
+            if env is None:
+                m.os.environ.pop("HERMES_TUI_HEAP_MB", None)
+            return m._resolve_tui_heap_mb()
+
+    def test_env_override_unconstrained(self):
+        # explicit low cap, no cgroup limit -> used as-is (the low-mem opt-in).
+        assert self._resolve(None, env={"HERMES_TUI_HEAP_MB": "256"}) == 256
+
+    def test_env_override_raises_ceiling(self):
+        # a higher-than-default cap is honored when unconstrained.
+        assert self._resolve(None, env={"HERMES_TUI_HEAP_MB": "16384"}) == 16384
+
+    def test_env_wins_over_config(self):
+        assert self._resolve(None, env={"HERMES_TUI_HEAP_MB": "512"}, config_mb=4096) == 512
+
+    def test_config_used_when_no_env(self):
+        assert self._resolve(None, config_mb=2048) == 2048
+
+    def test_override_still_cgroup_clamped(self):
+        # user asks for 16GB but the container is 4GB -> trimmed to 75% = 3072.
+        assert self._resolve(4 * GB, env={"HERMES_TUI_HEAP_MB": "16384"}) == 3072
+
+    def test_low_override_honored_under_big_container(self):
+        # a deliberately low cap is NOT raised by a roomy container.
+        assert self._resolve(16 * GB, env={"HERMES_TUI_HEAP_MB": "256"}) == 256
+
+    def test_garbage_env_falls_through_to_default(self):
+        assert self._resolve(None, env={"HERMES_TUI_HEAP_MB": "nope"}) == 8192
+
+    def test_nonpositive_env_falls_through(self):
+        assert self._resolve(None, env={"HERMES_TUI_HEAP_MB": "0"}) == 8192
+
+
+class TestExposeGcOnOpenTuiArgv:
+    """W1/D4: the OpenTUI engine argv must carry --expose-gc (parity with Ink) so
+    global.gc() is a real call, not a no-op."""
+
+    def test_opentui_argv_has_expose_gc(self, tmp_path):
+        app_dir = tmp_path / "ui-opentui"
+        (app_dir / "src" / "entry").mkdir(parents=True)
+        (app_dir / "src" / "entry" / "main.tsx").write_text("// entry")
+        (app_dir / "node_modules" / "@opentui").mkdir(parents=True)
+        (app_dir / "dist").mkdir()
+        (app_dir / "dist" / "main.js").write_text("// built")
+        with mock.patch.object(m, "PROJECT_ROOT", tmp_path), \
+             mock.patch.object(m, "_node26_bin", return_value="/usr/bin/node"):
+            argv, cwd = m._make_opentui_argv(tui_dev=False)
+        assert "--expose-gc" in argv
+        assert argv[0] == "/usr/bin/node"
+        assert argv[-1].endswith("dist/main.js")
+        assert cwd == app_dir
+
+
 class TestNodeOptionsTokenMerge:
     """The _launch_tui token-merge block must add the sized cap unless the user
     already supplied one, and must preserve unrelated NODE_OPTIONS flags."""
