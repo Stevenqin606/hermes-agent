@@ -117,8 +117,6 @@ jobs:
       HERMES_HOME: ${{ github.workspace }}\.e2e-hermes-home
 
     steps:
-      - uses: actions/checkout@v4
-
       - name: Download installer artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -168,15 +166,9 @@ jobs:
           Copy-Item -Path 'Hermes-Setup.exe' -Destination "$downloads\Hermes-Setup.exe" -Force
           Write-Host "Staged installer: $downloads\Hermes-Setup.exe"
 
-      # ── Prepare an isolated HERMES_HOME and copy checked-out repo ──────
-      # actions/checkout already has the right commit; just mirror it into the
-      # isolated home so the installer doesn't need to reach GitHub.
-      - name: Copy checked-out workspace into isolated HERMES_HOME
-        shell: pwsh
-        run: |
-          $installDir = "$env:HERMES_HOME\hermes-agent"
-          Copy-Item -Path "${{ github.workspace }}" -Destination $installDir -Recurse -Force
-          Write-Host "Isolated install dir ready: $installDir"
+      - uses: actions/checkout@v4
+        with:
+          repositoryPath: "{{ github.workspace }}\.e2e-hermes-home\hermes-agent"
 
       # ── Screen recording for coordinate discovery ───────────────────
       - name: Start screen recording
