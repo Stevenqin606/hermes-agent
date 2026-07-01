@@ -1749,6 +1749,31 @@ class TestSenderAuthentication(unittest.TestCase):
         )
         self.assertTrue(ok, reason)
 
+    def test_netease_auth_results_aliases_authenticate(self):
+        """NetEase/163 stamps SPF/DKIM properties as smtp.mail/header.i.
+
+        Keep strict sender auth enabled while accepting these provider-specific
+        aliases only when they still align with the visible From: domain.
+        """
+        ok, reason = self._verify(
+            "Qin Steven <stevenqin09@outlook.com>",
+            [
+                "gzga-mx-mtada-g4-7; spf=pass smtp.mail=stevenqin09@outlook.com; "
+                "dkim=pass header.i=@outlook.com"
+            ],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_netease_auth_results_aliases_reject_misaligned_domain(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                "gzga-mx-mtada-g4-7; spf=pass smtp.mail=attacker@evil.com; "
+                "dkim=pass header.i=@evil.com"
+            ],
+        )
+        self.assertFalse(ok, reason)
+
     def test_injected_header_below_trusted_does_not_authenticate(self):
         """An attacker-injected Authentication-Results sorts BELOW the receiving
         server's. With authserv-id pinning, only the trusted (first) header is

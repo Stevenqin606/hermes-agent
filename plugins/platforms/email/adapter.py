@@ -272,9 +272,11 @@ _AUTH_METHOD_RE = re.compile(
     r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE
 )
 # Match a property value like ``header.from=example.com`` or
-# ``smtp.mailfrom=user@example.com``.
+# ``smtp.mailfrom=user@example.com``. Some providers stamp non-standard
+# aliases (notably NetEase/163: ``smtp.mail`` and DKIM ``header.i``), so accept
+# those but still require domain alignment before trusting the sender.
 _AUTH_PROP_RE = re.compile(
-    r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)",
+    r"\b(header\.from|header\.d|header\.i|smtp\.mailfrom|smtp\.from|smtp\.mail|envelope-from)\s*=\s*([^\s;]+)",
     re.IGNORECASE,
 )
 
@@ -299,7 +301,7 @@ def _verify_sender_authentication(
     Returns ``(authenticated, reason)``. ``authenticated`` is True when:
       * a DMARC pass is recorded for the From domain, OR
       * an SPF pass aligned with the From domain, OR
-      * a DKIM pass aligned (``header.d``) with the From domain.
+      * a DKIM pass aligned (``header.d``/``header.i``) with the From domain.
 
     When no ``Authentication-Results`` header is present at all, we return
     ``(False, "no Authentication-Results header")`` — fail-closed. Operators
@@ -344,7 +346,7 @@ def _verify_sender_authentication(
     if methods.get("spf") == "pass":
         spf_domain = _domain_of(props.get("smtp.mailfrom", "")) or props.get(
             "smtp.from", ""
-        ) or props.get("envelope-from", "")
+        ) or _domain_of(props.get("smtp.mail", "")) or props.get("envelope-from", "")
         spf_domain = _domain_of(spf_domain) if "@" in spf_domain else spf_domain
         if _domains_aligned(spf_domain, from_domain):
             return True, "spf=pass aligned"
@@ -352,7 +354,11 @@ def _verify_sender_authentication(
     # 3) DKIM pass aligned with the From domain (the signing domain header.d
     #    must align with the From domain).
     if methods.get("dkim") == "pass":
-        dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
+        dkim_domain = (
+            props.get("header.d", "")
+            or _domain_of(props.get("header.i", ""))
+            or _domain_of(props.get("header.from", ""))
+        )
         if _domains_aligned(dkim_domain, from_domain):
             return True, "dkim=pass aligned"
 
